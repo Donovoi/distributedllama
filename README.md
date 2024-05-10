@@ -1,4 +1,4 @@
-# distributedllama
+# offline distributedllama
 
 My musings with distribution
 

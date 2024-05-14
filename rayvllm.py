@@ -12,19 +12,17 @@ async def async_invoke_model(model_name, prompt_text):
     try:
         # Get the node IP address
         node_ip = ray._private.services.get_node_ip_address()
-
+        # get the number of gpus and cpus across all nodes
+        num_gpus = ray.cluster_resources()["GPU"]
+        num_cpus = ray.cluster_resources()["CPU"]
         # Check if the model exists in the ollama list
         modelexists = model_exists_in_ollama_list(model_name)
         if not modelexists:
             await download_and_pull_model_if_missing(model_name)
 
-        # get the number of gpus and cpus across all nodes
-        num_gpus = ray.cluster_resources()["GPU"]
-        num_cpus = ray.cluster_resources()["CPU"]
-        print(f"Number of GPUs: {num_gpus}, Number of CPUs: {num_cpus}")
-
         # Initialize the model
-        llm = Ollama(model=model_name, keep_alive=-1, num_gpu=num_gpus, num_thread=0)
+        llm = Ollama(model=model_name, num_predict=-1
+                     )
 
         result = await llm.ainvoke(prompt_text)
 
@@ -41,9 +39,10 @@ def invoke_model_in_ray(model_name, prompt_text):
     return asyncio.run(async_invoke_model(model_name, prompt_text))
 
 
-# Decorate the wrapper function with @ray.remote
-invoke_model_in_ray = ray.remote(invoke_model_in_ray)
 
+# Decorate the wrapper function with @ray.remote
+invoke_model_in_ray = ray.remote(
+    invoke_model_in_ray)
 
 def model_exists_in_ollama_list(model_name):
     # Execute the `ollama list` command and capture the output
@@ -83,6 +82,7 @@ async def main():
     ray.shutdown()
     ray.init()
 
+
     # model_name = "llama3:latest"
     # prompt_text = "What is the capital of France?"
 
@@ -91,7 +91,7 @@ async def main():
 
     # Launch multiple tasks
     tasks = [invoke_model_in_ray.remote(
-        model_name, prompt_text) for _ in range(10)]
+        model_name, prompt_text) for _ in range(100)]
 
     # Collect and print results as tasks complete
     remaining_tasks = tasks

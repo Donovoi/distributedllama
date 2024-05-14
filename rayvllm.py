@@ -21,8 +21,7 @@ async def async_invoke_model(model_name, prompt_text):
             await download_and_pull_model_if_missing(model_name)
 
         # Initialize the model
-        llm = Ollama(model=model_name, num_predict=-1
-                     )
+        llm = Ollama(model=model_name, num_predict=-1)
 
         result = await llm.ainvoke(prompt_text)
 
@@ -39,10 +38,10 @@ def invoke_model_in_ray(model_name, prompt_text):
     return asyncio.run(async_invoke_model(model_name, prompt_text))
 
 
-
 # Decorate the wrapper function with @ray.remote
 invoke_model_in_ray = ray.remote(
     invoke_model_in_ray)
+
 
 def model_exists_in_ollama_list(model_name):
     # Execute the `ollama list` command and capture the output
@@ -82,12 +81,11 @@ async def main():
     ray.shutdown()
     ray.init()
 
-
     # model_name = "llama3:latest"
     # prompt_text = "What is the capital of France?"
 
     model_name = "dolphin-mixtral:8x22b"
-    prompt_text = "What is the capital of France?"
+    prompt_text = "What is the capital of France? Answer as one of the characters from breakfast club, then let me know when character you chose."
 
     # Launch multiple tasks
     tasks = [invoke_model_in_ray.remote(

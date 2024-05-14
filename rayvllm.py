@@ -1,7 +1,48 @@
 import os
 import subprocess
 import ray
+import asyncio
 from langchain_community.llms import Ollama
+from typing import Union, Sequence, List, Tuple, Dict, Any, Optional
+
+# Define the async function to invoke the model
+
+
+async def async_invoke_model(model_name, prompt_text):
+    try:
+        # Get the node IP address
+        node_ip = ray._private.services.get_node_ip_address()
+
+        # Check if the model exists in the ollama list
+        modelexists = model_exists_in_ollama_list(model_name)
+        if not modelexists:
+            await download_and_pull_model_if_missing(model_name)
+
+        # get the number of gpus and cpus across all nodes
+        num_gpus = ray.cluster_resources()["GPU"]
+        num_cpus = ray.cluster_resources()["CPU"]
+        print(f"Number of GPUs: {num_gpus}, Number of CPUs: {num_cpus}")
+
+        # Initialize the model
+        llm = Ollama(model=model_name, keep_alive=-1, num_gpu=num_gpus, num_thread=0)
+
+        result = await llm.ainvoke(prompt_text)
+
+        # Return result along with node information
+        return (node_ip, result)
+    except Exception as e:
+        print(f"Failed to invoke model in Ray. Error: {e}")
+        return None
+
+# Define the synchronous wrapper for the async function
+
+
+def invoke_model_in_ray(model_name, prompt_text):
+    return asyncio.run(async_invoke_model(model_name, prompt_text))
+
+
+# Decorate the wrapper function with @ray.remote
+invoke_model_in_ray = ray.remote(invoke_model_in_ray)
 
 
 def model_exists_in_ollama_list(model_name):
@@ -16,50 +57,49 @@ def model_exists_in_ollama_list(model_name):
         return False
 
 
-def download_and_pull_model_if_missing(model_name):
+async def download_and_pull_model_if_missing(model_name):
     if not model_exists_in_ollama_list(model_name):
         print(
             f"Model {model_name} not found in ollama list. Attempting to pull...")
         # Use the ollama pull command to download the model
         try:
-            subprocess.run(["ollama", "pull", model_name], check=True)
-            print(f"Model {model_name} pulled successfully.")
-        except subprocess.CalledProcessError as e:
+            result = await asyncio.create_subprocess_exec(
+                "ollama", "pull", model_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await result.communicate()
+            if result.returncode == 0:
+                print(f"Model {model_name} pulled successfully.")
+            else:
+                print(
+                    f"Failed to pull model {model_name}. Error: {stderr.decode()}")
+        except Exception as e:
             print(f"Failed to pull model {model_name}. Error: {e}")
     else:
         print(f"Model {model_name} found in ollama list.")
 
 
-def load_and_invoke_model(prompt_text):
-    # Initialize Ray
+async def main():
+    ray.shutdown()
     ray.init()
 
+    # model_name = "llama3:latest"
+    # prompt_text = "What is the capital of France?"
+
     model_name = "dolphin-mixtral:8x22b"
+    prompt_text = "What is the capital of France?"
 
-    # Check and download or pull the model if not found in ollama list
-    download_and_pull_model_if_missing(model_name)
+    # Launch multiple tasks
+    tasks = [invoke_model_in_ray.remote(
+        model_name, prompt_text) for _ in range(10)]
 
-    # Use vLLM to load the model from the specified path
-    try:
-        llm = Ollama(model=model_name)
-        output = llm.invoke(prompt_text)
-        return output
-    except Exception as e:
-        print(f"Failed to invoke model. Error: {e}")
-        return None
-
-
-def main():
-    # Prompt text for model inference
-    prompt_text = input("Enter the text prompt for the model: ")
-
-    # Load and invoke the model using Ray and vLLM
-    result = load_and_invoke_model(prompt_text)
-    if result:
-        print("Model response:", result)
-    else:
-        print("Check model files and configuration.")
-
+    # Collect and print results as tasks complete
+    remaining_tasks = tasks
+    while remaining_tasks:
+        done, remaining_tasks = ray.wait(remaining_tasks, num_returns=1)
+        for task in done:
+            node_ip, result = ray.get(task)
+            print(f"Node {node_ip} processed the task and returned: {result}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

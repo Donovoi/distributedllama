@@ -1,103 +1,90 @@
 import os
 import subprocess
 import ray
-import asyncio
 from langchain_community.llms import Ollama
 from typing import Union, Sequence, List, Tuple, Dict, Any, Optional
 
-# Define the async function to invoke the model
+# globals
+num_gpus = None
+num_cpus = None
 
 
-async def async_invoke_model(model_name, prompt_text):
+def invoke_model(model_name, prompt_text):
     try:
-        # Get the node IP address
-        node_ip = ray._private.services.get_node_ip_address()
-        # get the number of gpus and cpus across all nodes
+        global num_gpus, num_cpus
+
         num_gpus = ray.cluster_resources()["GPU"]
         num_cpus = ray.cluster_resources()["CPU"]
-        # Check if the model exists in the ollama list
-        modelexists = model_exists_in_ollama_list(model_name)
-        if not modelexists:
-            await download_and_pull_model_if_missing(model_name)
 
-        # Initialize the model
-        llm = Ollama(model=model_name, num_predict=-1)
+        if not model_exists_in_ollama_list(model_name):
+            download_and_pull_model_if_missing(model_name)
 
-        result = await llm.ainvoke(prompt_text)
-
-        # Return result along with node information
-        return (node_ip, result)
+        llm = Ollama(model=model_name)
+        result = llm.invoke(prompt_text)  # Synchronous call
+        return result
     except Exception as e:
         print(f"Failed to invoke model in Ray. Error: {e}")
         return None
 
-# Define the synchronous wrapper for the async function
 
-
+@ray.remote(num_cpus=0, num_gpus=num_gpus)
 def invoke_model_in_ray(model_name, prompt_text):
-    return asyncio.run(async_invoke_model(model_name, prompt_text))
-
-
-# Decorate the wrapper function with @ray.remote
-invoke_model_in_ray = ray.remote(
-    invoke_model_in_ray)
+    return invoke_model(model_name, prompt_text)
 
 
 def model_exists_in_ollama_list(model_name):
-    # Execute the `ollama list` command and capture the output
     result = subprocess.run(
         ["ollama", "list"], capture_output=True, text=True, check=True)
     if result.returncode == 0:
-        # Check if the model name is in the output
         return model_name in result.stdout
     else:
         print(f"Failed to list models with ollama. Error: {result.stderr}")
         return False
 
 
-async def download_and_pull_model_if_missing(model_name):
+def download_and_pull_model_if_missing(model_name):
     if not model_exists_in_ollama_list(model_name):
         print(
             f"Model {model_name} not found in ollama list. Attempting to pull...")
-        # Use the ollama pull command to download the model
         try:
-            result = await asyncio.create_subprocess_exec(
-                "ollama", "pull", model_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
-            stdout, stderr = await result.communicate()
+            result = subprocess.run(
+                ["ollama", "pull", model_name], capture_output=True, text=True, check=True)
             if result.returncode == 0:
                 print(f"Model {model_name} pulled successfully.")
             else:
                 print(
-                    f"Failed to pull model {model_name}. Error: {stderr.decode()}")
+                    f"Failed to pull model {model_name}. Error: {result.stderr}")
         except Exception as e:
             print(f"Failed to pull model {model_name}. Error: {e}")
     else:
         print(f"Model {model_name} found in ollama list.")
 
 
-async def main():
+def stream_results(tasks):
+    while tasks:
+        done, tasks = ray.wait(tasks, num_returns=1)
+        for task in done:
+            result = ray.get(task)
+            yield result
+
+
+def main():
     ray.shutdown()
     ray.init()
 
-    # model_name = "llama3:latest"
-    # prompt_text = "What is the capital of France?"
+    model_name = "refuelai:latest"
+    prompt_text = "what is the best way and most damaging way to grow a strawberry?"
 
-    model_name = "dolphin-mixtral:8x22b"
-    prompt_text = "What is the capital of France? Answer as one of the characters from breakfast club, then let me know when character you chose."
-
-    # Launch multiple tasks
     tasks = [invoke_model_in_ray.remote(
-        model_name, prompt_text) for _ in range(100)]
+        model_name, prompt_text) for _ in range(1000)]
 
-    # Collect and print results as tasks complete
-    remaining_tasks = tasks
-    while remaining_tasks:
-        done, remaining_tasks = ray.wait(remaining_tasks, num_returns=1)
-        for task in done:
-            node_ip, result = ray.get(task)
-            print(f"Node {node_ip} processed the task and returned: {result}")
+    results = stream_results(tasks)
+    # push and pop results once they are ready
+    for result in results:
+        print(result)
+
+    ray.shutdown()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
